@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 package dev.lyo.callrec.telephony
 
+import android.Manifest
 import android.content.Context
+import android.content.pm.PackageManager
 import android.telephony.SubscriptionManager
 import android.telephony.TelephonyManager
+import androidx.core.content.ContextCompat
 import androidx.core.content.getSystemService
 import dev.lyo.callrec.core.L
 
@@ -16,26 +19,47 @@ object CellularCall {
      * a real call.
      */
     fun isActive(ctx: Context): Boolean {
+        if (ContextCompat.checkSelfPermission(ctx, Manifest.permission.READ_PHONE_STATE) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            L.w("Receiver", "READ_PHONE_STATE unavailable — assuming SIM call")
+            return true
+        }
+
         val tm = ctx.getSystemService<TelephonyManager>() ?: return true
-        return runCatching {
+        return try {
             val subIds = activeSubscriptionIds(ctx)
             if (subIds.isEmpty()) {
-                return@runCatching tm.callStateForSubscription != TelephonyManager.CALL_STATE_IDLE
+                tm.callStateForSubscription != TelephonyManager.CALL_STATE_IDLE
+            } else {
+                subIds.any { subId ->
+                    tm.createForSubscriptionId(subId).callStateForSubscription !=
+                        TelephonyManager.CALL_STATE_IDLE
+                }
             }
-            subIds.any { subId ->
-                tm.createForSubscriptionId(subId).callStateForSubscription !=
-                    TelephonyManager.CALL_STATE_IDLE
-            }
-        }.getOrElse {
-            L.w("Receiver", "cellular probe failed (${it.javaClass.simpleName}) — assuming SIM call")
+        } catch (e: SecurityException) {
+            L.w("Receiver", "cellular probe denied (${e.javaClass.simpleName}) — assuming SIM call")
+            true
+        } catch (e: RuntimeException) {
+            L.w("Receiver", "cellular probe failed (${e.javaClass.simpleName}) — assuming SIM call")
             true
         }
     }
 
-    private fun activeSubscriptionIds(ctx: Context): List<Int> = runCatching {
-        ctx.getSystemService<SubscriptionManager>()
-            ?.activeSubscriptionInfoList
-            ?.map { it.subscriptionId }
-            .orEmpty()
-    }.getOrDefault(emptyList())
+    private fun activeSubscriptionIds(ctx: Context): List<Int> {
+        if (ContextCompat.checkSelfPermission(ctx, Manifest.permission.READ_PHONE_STATE) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            return emptyList()
+        }
+
+        return try {
+            ctx.getSystemService<SubscriptionManager>()
+                ?.activeSubscriptionInfoList
+                ?.map { it.subscriptionId }
+                .orEmpty()
+        } catch (_: SecurityException) {
+            emptyList()
+        }
+    }
 }
